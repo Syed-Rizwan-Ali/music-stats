@@ -224,16 +224,32 @@ export function renderHeroCard(topTrackItem, stats, datesData) {
 /**
  * Renders the Listening Time & Daily Streak metric card.
  */
-export function renderListeningTime(stats) {
+export function renderListeningTime(stats, currentRange = 'this-week', streakDays = 20, profile = null) {
   const container = document.getElementById('card-listening-time');
   if (!container) return;
 
-  const durationMs = stats?.durationMs || 191439682;
+  const durationMs = typeof stats?.durationMs === 'number' ? stats.durationMs : 0;
   const formattedTime = formatDuration(durationMs);
-  
-  // Calculate daily average (assuming 7 days for week, or 30 days)
-  const hours = durationMs / (1000 * 3600);
-  const dailyAverageHours = (hours / 7).toFixed(1);
+
+  // Calculate daily average by dividing total hours by the calendar days of the selected period
+  const totalHours = durationMs / (1000 * 3600);
+  let daysInPeriod = 7;
+
+  if (currentRange === 'last-30-days') {
+    daysInPeriod = 30;
+  } else if (currentRange === 'all-time') {
+    if (profile?.createdAt) {
+      const createdMs = new Date(profile.createdAt).getTime();
+      const elapsedDays = Math.max(1, Math.round((Date.now() - createdMs) / (1000 * 60 * 60 * 24)));
+      daysInPeriod = elapsedDays;
+    } else {
+      daysInPeriod = 365;
+    }
+  } else {
+    daysInPeriod = 7;
+  }
+
+  const dailyAverageHours = daysInPeriod > 0 ? (totalHours / daysInPeriod).toFixed(1) : '0.0';
 
   container.innerHTML = `
     <div class="card-header-line">
@@ -254,7 +270,7 @@ export function renderListeningTime(stats) {
         <span class="value-highlight mono-text">${escapeHTML(dailyAverageHours)} hrs/day</span>
       </div>
       <div class="progress-bar-track">
-        <div class="progress-bar-fill" style="width: ${Math.min(100, (parseFloat(dailyAverageHours) / 8) * 100)}%"></div>
+        <div class="progress-bar-fill" style="width: ${Math.min(100, (parseFloat(dailyAverageHours) / 24) * 100)}%"></div>
       </div>
     </div>
 
@@ -265,7 +281,7 @@ export function renderListeningTime(stats) {
       </div>
       <div class="streak-badge-right">
         <span class="streak-flame" aria-hidden="true">🔥</span>
-        <span class="streak-value mono-text">18 Days</span>
+        <span class="streak-value mono-text">${escapeHTML(streakDays.toString())} Days</span>
       </div>
     </div>
   `;
@@ -395,7 +411,7 @@ export function renderTopTracksList(tracksData) {
         const explicit = track.explicit;
 
         return `
-          <div class="track-row" role="listitem" tabindex="0">
+          <div class="track-row" role="listitem" tabindex="0" ${spotifyUrl ? `data-spotify-url="${escapeHTML(spotifyUrl)}" title="Click to listen on Spotify"` : ''}>
             <span class="track-rank mono-text">${escapeHTML(rank)}</span>
 
             <div class="track-cover-wrap">
@@ -462,15 +478,6 @@ export function renderTopArtists(artistsData) {
     return;
   }
 
-  // Pre-configured rank indicators matching VibePulse reference: +2, 0, -1, NEW, +4
-  const rankDeltas = [
-    { text: '+2', cls: 'delta-pos' },
-    { text: '0', cls: 'delta-neutral' },
-    { text: '-1', cls: 'delta-neg' },
-    { text: 'NEW', cls: 'delta-new' },
-    { text: '+4', cls: 'delta-pos' }
-  ];
-
   container.innerHTML = `
     <div class="card-header-bar">
       <div class="card-header-title-group">
@@ -487,8 +494,23 @@ export function renderTopArtists(artistsData) {
         const photoUrl = getArtistPhoto(artist);
         const streams = item.streams ? `${formatNumber(item.streams)} streams` : 'Active';
         const rankNumber = `#${item.position || index + 1}`;
-        const delta = rankDeltas[index % rankDeltas.length];
         const spotifyUrl = getSpotifyArtistUrl(artist);
+
+        // Only display movement delta pill if genuine indicator data is provided by the API
+        let deltaHtml = '';
+        if (item.indicator !== null && item.indicator !== undefined) {
+          if (item.indicator === 'NEW' || item.indicator === 'new') {
+            deltaHtml = `<div class="artist-delta-pill delta-new mono-text">NEW</div>`;
+          } else if (typeof item.indicator === 'number') {
+            if (item.indicator > 0) {
+              deltaHtml = `<div class="artist-delta-pill delta-pos mono-text">+${item.indicator}</div>`;
+            } else if (item.indicator < 0) {
+              deltaHtml = `<div class="artist-delta-pill delta-neg mono-text">${item.indicator}</div>`;
+            } else {
+              deltaHtml = `<div class="artist-delta-pill delta-neutral mono-text">0</div>`;
+            }
+          }
+        }
 
         return `
           <div class="artist-row" role="listitem">
@@ -514,7 +536,7 @@ export function renderTopArtists(artistsData) {
               <div class="artist-streams mono-text">${escapeHTML(streams)}</div>
             </div>
 
-            <div class="artist-delta-pill ${delta.cls} mono-text">${delta.text}</div>
+            ${deltaHtml}
           </div>
         `;
       }).join('')}
@@ -526,14 +548,14 @@ export function renderTopArtists(artistsData) {
  * Renders the GitHub-style listening intensity activity heatmap.
  * Uses real datesData if available, with an authentic deterministic fallback so it never errors.
  */
-export function renderListeningIntensity(datesData) {
+export function renderListeningIntensity(dailyActivityMap = {}, dateStats = null) {
   const container = document.getElementById('card-heatmap');
   if (!container) return;
 
   const weekdayNames = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
   const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 
-  // Current date reference and starting Monday 17 weeks ago (18 columns total)
+  // Current date reference and starting Monday 17 weeks ago (18 columns total = 126 days)
   const today = new Date();
   today.setHours(23, 59, 59, 999);
 
@@ -559,29 +581,66 @@ export function renderListeningIntensity(datesData) {
     }
   }
 
-  // Derive busiest day from stats.fm data or fallback
+  // Calculate actual daily metrics across the 18-week calendar range
+  let maxDailyCount = 0;
+  let activeDaysCount = 0;
+  let elapsedDaysCount = 0;
   let busiestDayName = 'Friday';
-  let busiestDayCount = 211;
+  let busiestDayCount = 0;
+  const weekdayTotals = [0, 0, 0, 0, 0, 0, 0];
 
-  if (datesData?.weekDays) {
+  for (let w = 0; w < totalWeeks; w++) {
+    for (let d = 0; d < 7; d++) {
+      const cellDate = new Date(startMonday);
+      cellDate.setDate(startMonday.getDate() + (w * 7) + d);
+      if (cellDate <= today) {
+        elapsedDaysCount++;
+        const dateKey = `${cellDate.getFullYear()}-${String(cellDate.getMonth() + 1).padStart(2, '0')}-${String(cellDate.getDate()).padStart(2, '0')}`;
+        const count = (dailyActivityMap && dailyActivityMap[dateKey]) || 0;
+        if (count > 0) {
+          activeDaysCount++;
+          weekdayTotals[d] += count;
+          if (count > maxDailyCount) maxDailyCount = count;
+        }
+      }
+    }
+  }
+
+  // Derive busiest day from actual daily listening totals
+  let maxWeekdaySum = -1;
+  let busiestDayIdx = 4; // default Friday
+  for (let d = 0; d < 7; d++) {
+    if (weekdayTotals[d] > maxWeekdaySum) {
+      maxWeekdaySum = weekdayTotals[d];
+      busiestDayIdx = d;
+    }
+  }
+  if (maxWeekdaySum > 0) {
+    busiestDayName = weekdayNames[busiestDayIdx] || 'Friday';
+    busiestDayCount = maxWeekdaySum;
+  } else if (dateStats?.weekDays) {
     let maxCount = -1;
-    let maxDayIdx = 5;
+    let maxIdx = 5;
     for (let d = 1; d <= 7; d++) {
-      const val = datesData.weekDays[d.toString()];
+      const val = dateStats.weekDays[d.toString()];
       if (val && val.count > maxCount) {
         maxCount = val.count;
-        maxDayIdx = d;
+        maxIdx = d;
       }
     }
     if (maxCount > 0) {
-      busiestDayName = weekdayNames[maxDayIdx - 1] || 'Friday';
+      busiestDayName = weekdayNames[maxIdx - 1] || 'Friday';
       busiestDayCount = maxCount;
     }
   }
 
-  // Build the 7 rows of the grid (Monday through Sunday)
-  let activeDaysCount = 0;
+  // Calculate discrete intensity thresholds from actual activity distribution
+  const step = Math.max(1, Math.ceil(maxDailyCount / 4));
+  const t1 = Math.max(1, Math.round(step * 0.7));
+  const t2 = Math.max(2, Math.round(step * 1.6));
+  const t3 = Math.max(3, Math.round(step * 2.8));
 
+  // Build the 7 rows of the grid (Monday through Sunday)
   const rowsHtml = [0, 1, 2, 3, 4, 5, 6].map(dayIdx => {
     const rowLabel = dayIdx === 0 ? 'Mon' : (dayIdx === 2 ? 'Wed' : (dayIdx === 4 ? 'Fri' : ''));
 
@@ -594,38 +653,19 @@ export function renderListeningIntensity(datesData) {
         return `<div class="heat-cell heat-cell-future" aria-hidden="true"></div>`;
       }
 
-      const dayOfMonth = cellDate.getDate();
-      const weekdayNum = (((cellDate.getDay() + 6) % 7) + 1).toString();
+      const dateKey = `${cellDate.getFullYear()}-${String(cellDate.getMonth() + 1).padStart(2, '0')}-${String(cellDate.getDate()).padStart(2, '0')}`;
+      const count = (dailyActivityMap && dailyActivityMap[dateKey]) || 0;
 
-      let count = 0;
-      if (datesData?.days && datesData.days[dayOfMonth.toString()]) {
-        count = datesData.days[dayOfMonth.toString()].count;
-      } else if (datesData?.monthDays && datesData.monthDays[dayOfMonth.toString()]) {
-        count = datesData.monthDays[dayOfMonth.toString()].count;
-      } else if (datesData?.weekDays && datesData.weekDays[weekdayNum]) {
-        const baseAvg = Math.round(datesData.weekDays[weekdayNum].count / 4);
-        const dayVariance = ((cellDate.getDate() * 11) % 15) - 7;
-        count = Math.max(0, baseAvg + dayVariance);
-      } else {
-        // Deterministic realistic activity generator
-        const seed = (cellDate.getFullYear() * 1000) + (cellDate.getMonth() * 32) + cellDate.getDate();
-        const isWeekend = (dayIdx === 4 || dayIdx === 5 || dayIdx === 6);
-        const base = isWeekend ? 32 : 16;
-        count = Math.max(0, Math.round(base + Math.sin(seed * 0.35) * 18 + Math.cos(seed * 0.6) * 10));
-      }
-
-      if (count > 0) activeDaysCount++;
-
-      // Intensity level mapping (0: dark, 1: subtle, 2: medium, 3: emerald, 4: bright saturated)
+      // Intensity level mapping (0: no activity, 1: subtle, 2: medium, 3: emerald, 4: peak)
       let level = 0;
       if (count === 0) level = 0;
-      else if (count <= 12) level = 1;
-      else if (count <= 28) level = 2;
-      else if (count <= 52) level = 3;
+      else if (count <= t1) level = 1;
+      else if (count <= t2) level = 2;
+      else if (count <= t3) level = 3;
       else level = 4;
 
       const dateStr = cellDate.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
-      const tooltip = count > 0 ? `${count} streams on ${dateStr}` : `No streams on ${dateStr}`;
+      const tooltip = count > 0 ? `${formatNumber(count)} stream${count === 1 ? '' : 's'} on ${dateStr}` : `No streams on ${dateStr}`;
 
       return `<div class="heat-cell heat-level-${level}" title="${escapeHTML(tooltip)}" data-count="${count}" data-date="${escapeHTML(dateStr)}"></div>`;
     }).join('');
@@ -638,10 +678,10 @@ export function renderListeningIntensity(datesData) {
     `;
   }).join('');
 
-  // Month labels header track
+  // Month labels header track aligned with the 18 week columns
   const monthsHtml = monthMarkers.map(marker => {
     const leftPercent = ((marker.weekIdx / totalWeeks) * 100).toFixed(1);
-    return `<span class="heatmap-month-tag" style="left: calc(26px + ${leftPercent}% * 0.94);">${escapeHTML(marker.name)}</span>`;
+    return `<span class="heatmap-month-tag" style="left: calc(34px + ${leftPercent}% * 0.92);">${escapeHTML(marker.name)}</span>`;
   }).join('');
 
   container.innerHTML = `
@@ -653,10 +693,10 @@ export function renderListeningIntensity(datesData) {
       <div class="heat-legend" aria-label="Listening intensity scale">
         <span class="legend-text">Less</span>
         <span class="heat-legend-box heat-level-0" title="0 streams"></span>
-        <span class="heat-legend-box heat-level-1" title="1–12 streams"></span>
-        <span class="heat-legend-box heat-level-2" title="13–28 streams"></span>
-        <span class="heat-legend-box heat-level-3" title="29–52 streams"></span>
-        <span class="heat-legend-box heat-level-4" title="53+ streams"></span>
+        <span class="heat-legend-box heat-level-1" title="1–${t1} streams"></span>
+        <span class="heat-legend-box heat-level-2" title="${t1 + 1}–${t2} streams"></span>
+        <span class="heat-legend-box heat-level-3" title="${t2 + 1}–${t3} streams"></span>
+        <span class="heat-legend-box heat-level-4" title="${t3 + 1}+ streams"></span>
         <span class="legend-text">More</span>
       </div>
     </div>
@@ -674,7 +714,7 @@ export function renderListeningIntensity(datesData) {
 
     <div class="heatmap-footer-row">
       <div class="heatmap-meta-summary">
-        <span>Active days: <strong class="mono-text">${activeDaysCount} of 126</strong></span>
+        <span>Active days: <strong class="mono-text">${activeDaysCount} of ${elapsedDaysCount || 126}</strong></span>
       </div>
       <span class="busiest-day-text">Busiest Day: <strong class="mono-text">${escapeHTML(busiestDayName)} (${formatNumber(busiestDayCount)} streams)</strong></span>
     </div>
@@ -908,11 +948,11 @@ export function renderRecapModal(dashboardData, onClose, onSaveImage, onCopyLink
   // Most played track (#1)
   const topTrackItem = Array.isArray(topTracks) && topTracks.length > 0 ? topTracks[0] : null;
   const topTrack = topTrackItem?.track || {};
-  const topTrackTitle = topTrack.name || 'Midnight City';
+  const topTrackTitle = topTrack.name || 'Untitled Track';
   const topTrackArtist = getTrackArtists(topTrack);
   const topTrackCover = getAlbumArt(topTrackItem);
-  const topTrackStreams = topTrackItem?.streams || 13;
-  const topTrackTime = topTrackItem?.playedMs ? formatDuration(topTrackItem.playedMs) : '1h listened';
+  const topTrackStreams = topTrackItem?.streams || 0;
+  const topTrackTime = topTrackItem?.playedMs ? formatDuration(topTrackItem.playedMs) : '0m listened';
 
   // Top Artists (top 4)
   const artistsList = Array.isArray(topArtists) ? topArtists.slice(0, 4) : [];
@@ -935,11 +975,19 @@ export function renderRecapModal(dashboardData, onClose, onSaveImage, onCopyLink
   }).join('');
 
   // Key stats
-  const totalDuration = stats?.durationMs ? formatDuration(stats.durationMs) : '50h 26m';
-  const topGenreName = Array.isArray(topGenres) && topGenres.length > 0
-    ? (topGenres[0].genre || topGenres[0].name || 'Indie Electronic')
-    : 'Indie Electronic';
-  const streakText = '18 Days';
+  const totalDuration = stats?.durationMs ? formatDuration(stats.durationMs) : '0m';
+  
+  // Format top genre name cleanly avoiding [object Object]
+  let topGenreName = 'General';
+  if (Array.isArray(topGenres) && topGenres.length > 0) {
+    const gObj = topGenres[0];
+    const rawTag = gObj.genre?.tag || (typeof gObj.genre === 'string' ? gObj.genre : null) || gObj.name || '';
+    if (rawTag) {
+      topGenreName = rawTag.split(/[\s/-]+/).map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
+    }
+  }
+
+  const streakText = dashboardData?.streakDays ? `${dashboardData.streakDays} Days` : '20 Days';
 
   modalContainer.innerHTML = `
     <div class="recap-modal-backdrop" id="recap-backdrop"></div>
@@ -1069,9 +1117,9 @@ export function renderRecapModal(dashboardData, onClose, onSaveImage, onCopyLink
 }
 
 /**
- * Generates and triggers download of a 9:16 vertical story PNG image via HTML5 Canvas.
+ * Generates and triggers download or Web Share of a 9:16 vertical story PNG image via HTML5 Canvas.
  */
-export function downloadRecapAsImage(dashboardData, onComplete) {
+export function downloadRecapAsImage(dashboardData, onComplete, onError) {
   const profile = dashboardData?.profile;
   const stats = dashboardData?.stats;
   const topTracks = dashboardData?.topTracks;
@@ -1090,111 +1138,134 @@ export function downloadRecapAsImage(dashboardData, onComplete) {
   const topTrack = topTrackItem?.track || {};
   const trackTitle = topTrack.name || 'Top Track';
   const trackArtist = getTrackArtists(topTrack);
-  const trackStreams = topTrackItem?.streams || 13;
-  const trackPlayedMs = topTrackItem?.playedMs || 3614219;
+  const trackStreams = topTrackItem?.streams || 0;
+  const trackPlayedMs = topTrackItem?.playedMs || 0;
   const coverUrl = getAlbumArt(topTrackItem);
 
-  const totalTimeStr = stats?.durationMs ? formatDuration(stats.durationMs) : '50h 26m';
-  const topGenre = Array.isArray(topGenres) && topGenres.length > 0 ? (topGenres[0].genre || topGenres[0].name) : 'Indie Electronic';
+  const totalTimeStr = stats?.durationMs ? formatDuration(stats.durationMs) : '0m';
+  
+  let topGenre = 'General';
+  if (Array.isArray(topGenres) && topGenres.length > 0) {
+    const gObj = topGenres[0];
+    const rawTag = gObj.genre?.tag || (typeof gObj.genre === 'string' ? gObj.genre : null) || gObj.name || '';
+    if (rawTag) {
+      topGenre = rawTag.split(/[\s/-]+/).map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
+    }
+  }
+
+  const streakText = dashboardData?.streakDays ? `${dashboardData.streakDays} Days 🔥` : '20 Days 🔥';
 
   const canvas = document.createElement('canvas');
   canvas.width = 1080;
   canvas.height = 1920;
   const ctx = canvas.getContext('2d');
-  if (!ctx) return;
+  if (!ctx) {
+    if (onError) onError(new Error('Canvas 2D context not supported'));
+    return;
+  }
 
   function renderAndDownload(coverImg) {
-    // 1. Overall Dark Background
-    ctx.fillStyle = '#0a0a0f';
-    ctx.fillRect(0, 0, 1080, 1920);
+    try {
+      // 1. Overall Dark Background
+      ctx.fillStyle = '#0a0a0f';
+      ctx.fillRect(0, 0, 1080, 1920);
 
-    // Subtle Radial Glow at Top
-    const radial = ctx.createRadialGradient(540, 240, 60, 540, 240, 650);
-    radial.addColorStop(0, 'rgba(34, 197, 94, 0.16)');
-    radial.addColorStop(1, 'rgba(10, 10, 15, 0)');
-    ctx.fillStyle = radial;
-    ctx.fillRect(0, 0, 1080, 800);
+      // Subtle Radial Glow at Top
+      const radial = ctx.createRadialGradient(540, 240, 60, 540, 240, 650);
+      radial.addColorStop(0, 'rgba(34, 197, 94, 0.16)');
+      radial.addColorStop(1, 'rgba(10, 10, 15, 0)');
+      ctx.fillStyle = radial;
+      ctx.fillRect(0, 0, 1080, 800);
 
-    // 2. Card Boundary
-    const cardX = 90;
-    const cardY = 160;
-    const cardW = 900;
-    const cardH = 1600;
-    const cardR = 48;
+      // 2. Card Boundary
+      const cardX = 90;
+      const cardY = 160;
+      const cardW = 900;
+      const cardH = 1600;
+      const cardR = 48;
 
-    // Card Fill
-    ctx.fillStyle = '#121218';
-    ctx.beginPath();
-    ctx.roundRect(cardX, cardY, cardW, cardH, cardR);
-    ctx.fill();
+      // Card Fill
+      ctx.fillStyle = '#121218';
+      ctx.beginPath();
+      ctx.roundRect(cardX, cardY, cardW, cardH, cardR);
+      ctx.fill();
 
-    // Card Border
-    ctx.strokeStyle = '#22222e';
-    ctx.lineWidth = 3;
-    ctx.stroke();
+      // Card Border
+      ctx.strokeStyle = '#22222e';
+      ctx.lineWidth = 3;
+      ctx.stroke();
 
-    // Top Emerald Border Accent
-    ctx.fillStyle = '#22c55e';
-    ctx.beginPath();
-    ctx.roundRect(cardX, cardY, cardW, 14, [cardR, cardR, 0, 0]);
-    ctx.fill();
+      // Top Emerald Border Accent
+      ctx.fillStyle = '#22c55e';
+      ctx.beginPath();
+      ctx.roundRect(cardX, cardY, cardW, 14, [cardR, cardR, 0, 0]);
+      ctx.fill();
 
-    // 3. Header Section
-    ctx.fillStyle = '#4ade80';
-    ctx.font = 'bold 36px Inter, sans-serif';
-    ctx.textAlign = 'center';
-    ctx.fillText('⚡ VIBEPULSE RECAP', 540, 260);
+      // 3. Header Section
+      ctx.fillStyle = '#4ade80';
+      ctx.font = 'bold 36px Inter, sans-serif';
+      ctx.textAlign = 'center';
+      ctx.fillText('⚡ VIBEPULSE RECAP', 540, 260);
 
-    ctx.fillStyle = '#a1a1aa';
-    ctx.font = 'bold 24px JetBrains Mono, monospace';
-    ctx.fillText('WEEKLY MUSIC SUMMARY', 540, 310);
+      ctx.fillStyle = '#a1a1aa';
+      ctx.font = 'bold 24px JetBrains Mono, monospace';
+      ctx.fillText('WEEKLY MUSIC SUMMARY', 540, 310);
 
-    ctx.fillStyle = '#71717a';
-    ctx.font = '22px JetBrains Mono, monospace';
-    ctx.fillText(dateRangeStr, 540, 355);
+      ctx.fillStyle = '#71717a';
+      ctx.font = '22px JetBrains Mono, monospace';
+      ctx.fillText(dateRangeStr, 540, 355);
 
-    // Dashed line
-    ctx.setLineDash([12, 12]);
-    ctx.strokeStyle = '#272736';
-    ctx.lineWidth = 2;
-    ctx.beginPath();
-    ctx.moveTo(cardX + 45, 395);
-    ctx.lineTo(cardX + cardW - 45, 395);
-    ctx.stroke();
-    ctx.setLineDash([]);
+      // Dashed line
+      ctx.setLineDash([12, 12]);
+      ctx.strokeStyle = '#272736';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(cardX + 45, 395);
+      ctx.lineTo(cardX + cardW - 45, 395);
+      ctx.stroke();
+      ctx.setLineDash([]);
 
-    // 4. User Info
-    ctx.textAlign = 'left';
-    ctx.fillStyle = '#71717a';
-    ctx.font = 'bold 24px JetBrains Mono, monospace';
-    ctx.fillText('LISTENED BY:', cardX + 50, 450);
+      // 4. User Info
+      ctx.textAlign = 'left';
+      ctx.fillStyle = '#71717a';
+      ctx.font = 'bold 24px JetBrains Mono, monospace';
+      ctx.fillText('LISTENED BY:', cardX + 50, 450);
 
-    ctx.textAlign = 'right';
-    ctx.fillStyle = '#ffffff';
-    ctx.font = 'bold 30px Inter, sans-serif';
-    ctx.fillText(handle, cardX + cardW - 50, 450);
+      ctx.textAlign = 'right';
+      ctx.fillStyle = '#ffffff';
+      ctx.font = 'bold 30px Inter, sans-serif';
+      ctx.fillText(handle, cardX + cardW - 50, 450);
 
-    // 5. #1 Track Card
-    const trackY = 490;
-    ctx.fillStyle = '#171722';
-    ctx.beginPath();
-    ctx.roundRect(cardX + 40, trackY, cardW - 80, 220, 28);
-    ctx.fill();
-    ctx.strokeStyle = '#28283a';
-    ctx.lineWidth = 2;
-    ctx.stroke();
+      // 5. #1 Track Card
+      const trackY = 490;
+      ctx.fillStyle = '#171722';
+      ctx.beginPath();
+      ctx.roundRect(cardX + 40, trackY, cardW - 80, 220, 28);
+      ctx.fill();
+      ctx.strokeStyle = '#28283a';
+      ctx.lineWidth = 2;
+      ctx.stroke();
 
-    // Cover art
-    if (coverImg && coverImg.naturalWidth > 0) {
-      try {
-        ctx.save();
-        ctx.beginPath();
-        ctx.roundRect(cardX + 65, trackY + 30, 160, 160, 20);
-        ctx.clip();
-        ctx.drawImage(coverImg, cardX + 65, trackY + 30, 160, 160);
-        ctx.restore();
-      } catch (e) {
-        // Fallback if cross-origin tainted
+      // Cover art
+      if (coverImg && coverImg.naturalWidth > 0) {
+        try {
+          ctx.save();
+          ctx.beginPath();
+          ctx.roundRect(cardX + 65, trackY + 30, 160, 160, 20);
+          ctx.clip();
+          ctx.drawImage(coverImg, cardX + 65, trackY + 30, 160, 160);
+          ctx.restore();
+        } catch (e) {
+          ctx.fillStyle = '#1c1c28';
+          ctx.beginPath();
+          ctx.roundRect(cardX + 65, trackY + 30, 160, 160, 20);
+          ctx.fill();
+          ctx.fillStyle = '#22c55e';
+          ctx.beginPath();
+          ctx.arc(cardX + 145, trackY + 110, 40, 0, Math.PI * 2);
+          ctx.fill();
+        }
+      } else {
         ctx.fillStyle = '#1c1c28';
         ctx.beginPath();
         ctx.roundRect(cardX + 65, trackY + 30, 160, 160, 20);
@@ -1204,140 +1275,162 @@ export function downloadRecapAsImage(dashboardData, onComplete) {
         ctx.arc(cardX + 145, trackY + 110, 40, 0, Math.PI * 2);
         ctx.fill();
       }
-    } else {
-      ctx.fillStyle = '#1c1c28';
-      ctx.beginPath();
-      ctx.roundRect(cardX + 65, trackY + 30, 160, 160, 20);
-      ctx.fill();
-      ctx.fillStyle = '#22c55e';
-      ctx.beginPath();
-      ctx.arc(cardX + 145, trackY + 110, 40, 0, Math.PI * 2);
-      ctx.fill();
-    }
-
-    ctx.textAlign = 'left';
-    ctx.fillStyle = '#22c55e';
-    ctx.font = 'bold 22px JetBrains Mono, monospace';
-    ctx.fillText('#1 MOST PLAYED', cardX + 250, trackY + 65);
-
-    ctx.fillStyle = '#ffffff';
-    ctx.font = 'bold 38px Inter, sans-serif';
-    ctx.fillText(trackTitle.slice(0, 24), cardX + 250, trackY + 120);
-
-    ctx.fillStyle = '#22c55e';
-    ctx.font = '600 28px Inter, sans-serif';
-    ctx.fillText(trackArtist.slice(0, 30), cardX + 250, trackY + 165);
-
-    ctx.fillStyle = '#a1a1aa';
-    ctx.font = '22px JetBrains Mono, monospace';
-    ctx.fillText(`${formatNumber(trackStreams)} streams • ${formatDuration(trackPlayedMs)}`, cardX + 250, trackY + 200);
-
-    // 6. Top Artists Section
-    const artSectionY = 750;
-    ctx.fillStyle = '#71717a';
-    ctx.font = 'bold 22px JetBrains Mono, monospace';
-    ctx.textAlign = 'left';
-    ctx.fillText('QTY / TOP ARTISTS', cardX + 50, artSectionY);
-    ctx.textAlign = 'right';
-    ctx.fillText('PLAYS', cardX + cardW - 50, artSectionY);
-
-    let curY = artSectionY + 60;
-    const artArr = Array.isArray(topArtists) ? topArtists.slice(0, 4) : [];
-    artArr.forEach((item, i) => {
-      const art = item?.artist || {};
-      const aName = (art.name || `Artist ${i + 1}`).slice(0, 28);
-      const sCount = formatNumber(item?.streams || 0);
 
       ctx.textAlign = 'left';
-      ctx.fillStyle = '#71717a';
-      ctx.font = 'bold 28px JetBrains Mono, monospace';
-      ctx.fillText(`${i + 1}.`, cardX + 50, curY);
-
-      ctx.fillStyle = '#f4f4f6';
-      ctx.font = '600 30px Inter, sans-serif';
-      ctx.fillText(aName, cardX + 95, curY);
-
-      ctx.textAlign = 'right';
       ctx.fillStyle = '#22c55e';
-      ctx.font = 'bold 28px JetBrains Mono, monospace';
-      ctx.fillText(sCount, cardX + cardW - 50, curY);
+      ctx.font = 'bold 22px JetBrains Mono, monospace';
+      ctx.fillText('#1 MOST PLAYED', cardX + 250, trackY + 65);
 
-      curY += 66;
-    });
+      ctx.fillStyle = '#ffffff';
+      ctx.font = 'bold 38px Inter, sans-serif';
+      ctx.fillText(trackTitle.slice(0, 24), cardX + 250, trackY + 120);
 
-    // Dashed divider
-    ctx.setLineDash([12, 12]);
-    ctx.strokeStyle = '#272736';
-    ctx.lineWidth = 2;
-    ctx.beginPath();
-    ctx.moveTo(cardX + 45, curY + 20);
-    ctx.lineTo(cardX + cardW - 45, curY + 20);
-    ctx.stroke();
-    ctx.setLineDash([]);
+      ctx.fillStyle = '#22c55e';
+      ctx.font = '600 28px Inter, sans-serif';
+      ctx.fillText(trackArtist.slice(0, 30), cardX + 250, trackY + 165);
 
-    // 7. Stats
-    const statsY = curY + 80;
-    const metricsData = [
-      { label: 'TOTAL TIME', val: totalTimeStr, color: '#22c55e' },
-      { label: 'TOP GENRE', val: (topGenre || 'Indie Electronic').slice(0, 20), color: '#ffffff' },
-      { label: 'DAILY STREAK', val: '18 Days 🔥', color: '#ffffff' }
-    ];
+      ctx.fillStyle = '#a1a1aa';
+      ctx.font = '22px JetBrains Mono, monospace';
+      ctx.fillText(`${formatNumber(trackStreams)} streams • ${formatDuration(trackPlayedMs)}`, cardX + 250, trackY + 200);
 
-    metricsData.forEach((m, idx) => {
-      const my = statsY + (idx * 72);
-      ctx.textAlign = 'left';
+      // 6. Top Artists Section
+      const artSectionY = 750;
       ctx.fillStyle = '#71717a';
-      ctx.font = 'bold 26px JetBrains Mono, monospace';
-      ctx.fillText(m.label + ':', cardX + 50, my);
-
+      ctx.font = 'bold 22px JetBrains Mono, monospace';
+      ctx.textAlign = 'left';
+      ctx.fillText('QTY / TOP ARTISTS', cardX + 50, artSectionY);
       ctx.textAlign = 'right';
-      ctx.fillStyle = m.color;
-      ctx.font = 'bold 30px JetBrains Mono, monospace';
-      ctx.fillText(m.val, cardX + cardW - 50, my);
-    });
+      ctx.fillText('PLAYS', cardX + cardW - 50, artSectionY);
 
-    // 8. Equalizer Waveform Bars (NO BARCODE!)
-    const waveY = statsY + (metricsData.length * 72) + 70;
-    const waveWidth = cardW - 120;
-    const waveStartX = cardX + 60;
-    const barCount = 34;
-    const singleBarW = Math.floor(waveWidth / (barCount * 1.5));
-    const gapW = singleBarW * 0.5;
+      let curY = artSectionY + 60;
+      const artArr = Array.isArray(topArtists) ? topArtists.slice(0, 4) : [];
+      artArr.forEach((item, i) => {
+        const art = item?.artist || {};
+        const aName = (art.name || `Artist ${i + 1}`).slice(0, 28);
+        const sCount = formatNumber(item?.streams || 0);
 
-    for (let i = 0; i < barCount; i++) {
-      const bx = waveStartX + (i * (singleBarW + gapW));
-      const norm = Math.sin((i / (barCount - 1)) * Math.PI);
-      const bHeight = Math.floor(norm * 52 + Math.sin(i * 1.8) * 22 + 20);
-      const by = waveY + (55 - bHeight) / 2;
+        ctx.textAlign = 'left';
+        ctx.fillStyle = '#71717a';
+        ctx.font = 'bold 28px JetBrains Mono, monospace';
+        ctx.fillText(`${i + 1}.`, cardX + 50, curY);
 
-      ctx.fillStyle = (i % 2 === 0) ? '#22c55e' : '#272738';
+        ctx.fillStyle = '#f4f4f6';
+        ctx.font = '600 30px Inter, sans-serif';
+        ctx.fillText(aName, cardX + 95, curY);
+
+        ctx.textAlign = 'right';
+        ctx.fillStyle = '#22c55e';
+        ctx.font = 'bold 28px JetBrains Mono, monospace';
+        ctx.fillText(sCount, cardX + cardW - 50, curY);
+
+        curY += 66;
+      });
+
+      // Dashed divider
+      ctx.setLineDash([12, 12]);
+      ctx.strokeStyle = '#272736';
+      ctx.lineWidth = 2;
       ctx.beginPath();
-      ctx.roundRect(bx, by, singleBarW, bHeight, singleBarW / 2);
-      ctx.fill();
-    }
+      ctx.moveTo(cardX + 45, curY + 20);
+      ctx.lineTo(cardX + cardW - 45, curY + 20);
+      ctx.stroke();
+      ctx.setLineDash([]);
 
-    // 9. Tagline
-    ctx.textAlign = 'center';
-    ctx.fillStyle = '#52525e';
-    ctx.font = 'bold 20px JetBrains Mono, monospace';
-    ctx.fillText('POWERED BY YOUR SOUNDTRACK • VIBEPULSE', 540, waveY + 95);
+      // 7. Stats
+      const statsY = curY + 80;
+      const metricsData = [
+        { label: 'TOTAL TIME', val: totalTimeStr, color: '#22c55e' },
+        { label: 'TOP GENRE', val: topGenre.slice(0, 20), color: '#ffffff' },
+        { label: 'DAILY STREAK', val: streakText, color: '#ffffff' }
+      ];
 
-    // Convert to blob and download
-    try {
-      canvas.toBlob(blob => {
-        if (!blob) return;
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.download = 'vibepulse-weekly-recap.png';
-        a.href = url;
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
-        setTimeout(() => URL.revokeObjectURL(url), 2000);
-        if (onComplete) onComplete();
+      metricsData.forEach((m, idx) => {
+        const my = statsY + (idx * 72);
+        ctx.textAlign = 'left';
+        ctx.fillStyle = '#71717a';
+        ctx.font = 'bold 26px JetBrains Mono, monospace';
+        ctx.fillText(m.label + ':', cardX + 50, my);
+
+        ctx.textAlign = 'right';
+        ctx.fillStyle = m.color;
+        ctx.font = 'bold 30px JetBrains Mono, monospace';
+        ctx.fillText(m.val, cardX + cardW - 50, my);
+      });
+
+      // 8. Equalizer Waveform Bars (NO BARCODE!)
+      const waveY = statsY + (metricsData.length * 72) + 70;
+      const waveWidth = cardW - 120;
+      const waveStartX = cardX + 60;
+      const barCount = 34;
+      const singleBarW = Math.floor(waveWidth / (barCount * 1.5));
+      const gapW = singleBarW * 0.5;
+
+      for (let i = 0; i < barCount; i++) {
+        const bx = waveStartX + (i * (singleBarW + gapW));
+        const norm = Math.sin((i / (barCount - 1)) * Math.PI);
+        const bHeight = Math.floor(norm * 52 + Math.sin(i * 1.8) * 22 + 20);
+        const by = waveY + (55 - bHeight) / 2;
+
+        ctx.fillStyle = (i % 2 === 0) ? '#22c55e' : '#272738';
+        ctx.beginPath();
+        ctx.roundRect(bx, by, singleBarW, bHeight, singleBarW / 2);
+        ctx.fill();
+      }
+
+      // 9. Tagline
+      ctx.textAlign = 'center';
+      ctx.fillStyle = '#52525e';
+      ctx.font = 'bold 20px JetBrains Mono, monospace';
+      ctx.fillText('POWERED BY YOUR SOUNDTRACK • VIBEPULSE', 540, waveY + 95);
+
+      // Convert to blob and share / download
+      canvas.toBlob(async blob => {
+        if (!blob) {
+          if (onError) onError(new Error('Canvas image creation failed'));
+          return;
+        }
+
+        // Try Web Share API with image file if supported
+        try {
+          const file = new File([blob], 'vibepulse-weekly-recap.png', { type: 'image/png' });
+          if (navigator.canShare && navigator.canShare({ files: [file] })) {
+            try {
+              await navigator.share({
+                title: 'VibePulse Weekly Recap',
+                text: 'My Weekly Music Summary on VibePulse!',
+                files: [file]
+              });
+              if (onComplete) onComplete('shared');
+              return;
+            } catch (shareErr) {
+              if (shareErr.name === 'AbortError') {
+                return;
+              }
+            }
+          }
+        } catch (e) {
+          console.warn('Web Share check error:', e);
+        }
+
+        // Reliable download fallback
+        try {
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement('a');
+          a.download = 'vibepulse-weekly-recap.png';
+          a.href = url;
+          document.body.appendChild(a);
+          a.click();
+          document.body.removeChild(a);
+          setTimeout(() => URL.revokeObjectURL(url), 2000);
+          if (onComplete) onComplete('downloaded');
+        } catch (dlErr) {
+          if (onError) onError(dlErr);
+        }
       }, 'image/png');
-    } catch (e) {
-      console.warn('Canvas export download error:', e);
+
+    } catch (renderErr) {
+      console.error('Error during canvas render:', renderErr);
+      if (onError) onError(renderErr);
     }
   }
 

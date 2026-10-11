@@ -113,7 +113,8 @@ export async function fetchRecentStreams(username, limit = 10, force = false) {
  */
 export async function fetchDateStats(username, rangeParams, force = false) {
   // stats.fm API expects timeZoneOffset in integer hours (-12 to +14), not minutes
-  const tzOffsetHours = Math.round((new Date().getTimezoneOffset() * -1) / 60);
+  const rawOffset = Math.round((new Date().getTimezoneOffset() * -1) / 60);
+  const tzOffsetHours = Math.max(-12, Math.min(14, rawOffset));
   const url = `${BASE_URL}/users/${encodeURIComponent(username)}/streams/stats/dates?${rangeParams}&timeZoneOffset=${tzOffsetHours}`;
   try {
     const json = await fetchWithCache(url, force);
@@ -123,4 +124,19 @@ export async function fetchDateStats(username, rangeParams, force = false) {
     return null;
   }
 }
+
+/**
+ * Fetches real historical stream logs for exact daily listening activity and streak.
+ */
+export async function fetchStreamHistory(username, limit = 10000, force = false) {
+  const url = `${BASE_URL}/users/${encodeURIComponent(username)}/streams?limit=${limit}`;
+  try {
+    const json = await fetchWithCache(url, force);
+    return json?.items || [];
+  } catch (e) {
+    console.warn('streamHistory fetch failed:', e);
+    return [];
+  }
+}
+
 

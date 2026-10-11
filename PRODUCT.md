@@ -32,11 +32,13 @@ Modern desktop and mobile web browsers. Used casually to review personal music t
 - Public stats.fm API base: `https://api.stats.fm/api/v1`
 - Target username: `r1zzler` (isolated in single config constant `js/config.js` for quick switching)
 - Read-only, client-side requests with native browser CORS
-- Range presets: This Week (`range=weeks&range_value=1`), Last 30 Days (`range=months&range_value=1`), All Time (`range=lifetime`)
+- Range presets: This Week (`range=weeks`), Last 30 Days (`range=months`), All Time (`range=lifetime`)
 - Top 10 tracks featuring real album artwork (`item.track.albums[0].image`) with fallback placeholder
 - Top Artists (5), Top Genres (with distribution bar), Listening Time, and Recent Streams
-- Real listening intensity metrics derived from `/users/r1zzler/streams/stats/dates`
-- No backend, no Spotify OAuth required, no API key required for public profiles
+- Real listening intensity & daily streaks derived from stream timestamp history (`/users/r1zzler/streams?limit=10000`)
+- Period-aware daily average calculation (7 days for This Week, 30 days for Last 30 Days, calendar elapsed days since account creation for All Time)
+- Share Weekly Recap: modal preview card generating authentic 7-day stats with Web Share API and html2canvas PNG export fallback
+- No backend required for core stats, no Spotify OAuth required, no API key required for public profiles
 - Terminology: "streams" or "plays" (not Last.fm "scrobbles")
 - Graceful degradation: independent card loading with isolated error boundaries
 
@@ -48,6 +50,7 @@ Modern desktop and mobile web browsers. Used casually to review personal music t
 - Brand Accent: `#22c55e` (vibrant emerald / stats.fm green)
 - Typography: Inter (UI & typography) + JetBrains Mono (numbers, metrics, timestamps, badges)
 - Iconic Motif: Hero Top Track featuring a realistic vinyl record sliding out from the album sleeve
+- Weekly Recap: High-contrast aesthetic recap modal with vinyl groove artwork, custom waveform preview, and instant download
 
 ## Evidence on Hand
 
@@ -56,7 +59,7 @@ Modern desktop and mobile web browsers. Used casually to review personal music t
 - Top artists: `GET /users/r1zzler/top/artists`
 - Top genres: `GET /users/r1zzler/top/genres`
 - Stream stats: `GET /users/r1zzler/streams/stats`
-- Stream dates & intensity: `GET /users/r1zzler/streams/stats/dates?timeZoneOffset=0`
+- Stream history: `GET /users/r1zzler/streams?limit=10000` (used for true 120-day heatmap and consecutive daily streak)
 - Recent streams: `GET /users/r1zzler/streams/recent?limit=10`
 - Reference design: VibePulse bento grid screenshot
 

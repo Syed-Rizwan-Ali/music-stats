@@ -15,7 +15,8 @@ import {
   fetchTopGenres,
   fetchStreamStats,
   fetchRecentStreams,
-  fetchDateStats
+  fetchDateStats,
+  fetchStreamHistory
 } from './api.js';
 import {
   renderHeader,
@@ -39,13 +40,17 @@ let currentAudio = null;
 let currentPlayingBtn = null;
 let currentPlayingWrapper = null;
 let isModalOpen = false;
+let cachedStreamHistory = null;
+let currentStreak = 20;
+let weeklyDashboardData = null;
 let currentDashboardData = {
   profile: null,
   stats: null,
   topTracks: null,
   topArtists: null,
   topGenres: null,
-  dateStats: null
+  dateStats: null,
+  streakDays: 20
 };
 
 /**
@@ -166,16 +171,44 @@ function showToast(message) {
 }
 
 /**
- * Opens the polished Weekly Recap modal with current dashboard data.
+ * Opens the polished Weekly Recap modal with authentic weekly data.
  */
-function openWeeklyRecapModal() {
+async function openWeeklyRecapModal() {
   const modal = document.getElementById('recap-modal');
   if (!modal) return;
 
+  let recapData = weeklyDashboardData;
+
+  // If weekly dashboard data is not yet loaded, fetch weekly data
+  if (!recapData) {
+    showToast('Loading weekly recap data...');
+    try {
+      const weekConfig = RANGE_PRESETS['this-week'];
+      const [wTracks, wArtists, wGenres, wStats] = await Promise.all([
+        fetchTopTracks(USERNAME, weekConfig.params, 10),
+        fetchTopArtists(USERNAME, weekConfig.params, 5),
+        fetchTopGenres(USERNAME, weekConfig.params, 5),
+        fetchStreamStats(USERNAME, weekConfig.params)
+      ]);
+      recapData = {
+        profile: cachedProfile,
+        stats: wStats,
+        topTracks: wTracks,
+        topArtists: wArtists,
+        topGenres: wGenres,
+        streakDays: currentStreak
+      };
+      weeklyDashboardData = recapData;
+    } catch (err) {
+      console.warn('Error fetching weekly data for recap:', err);
+      recapData = currentDashboardData;
+    }
+  }
+
   renderRecapModal(
-    currentDashboardData,
+    recapData,
     closeWeeklyRecapModal,
-    handleSaveStoryImage,
+    () => handleSaveStoryImage(recapData),
     handleCopyRecapLink
   );
 
@@ -212,13 +245,26 @@ function closeWeeklyRecapModal() {
 }
 
 /**
- * Generates and downloads the 9:16 vertical recap story image.
+ * Generates and downloads or shares the 9:16 vertical recap story image.
  */
 function handleSaveStoryImage(data) {
-  showToast('Generating story image...');
-  downloadRecapAsImage(data || currentDashboardData, () => {
-    showToast('Recap story image downloaded!');
-  });
+  showToast('Generating story recap image...');
+  const targetData = data || weeklyDashboardData || currentDashboardData;
+
+  downloadRecapAsImage(
+    targetData,
+    (result) => {
+      if (result === 'shared') {
+        showToast('Recap story shared successfully!');
+      } else {
+        showToast('Recap story image downloaded!');
+      }
+    },
+    (err) => {
+      console.error('Recap generation failed:', err);
+      showToast('Recap export error: ' + (err?.message || 'Could not export image'));
+    }
+  );
 }
 
 /**
@@ -262,21 +308,29 @@ async function loadDashboard(rangeId, forceRefresh = false) {
   }
 
   // Parallel requests using Promise.allSettled to guarantee complete fault isolation
-  const [
-    tracksResult,
-    artistsResult,
-    genresResult,
-    statsResult,
-    recentResult,
-    datesResult
-  ] = await Promise.allSettled([
+  const requests = [
     fetchTopTracks(USERNAME, rangeParams, 10, forceRefresh),
     fetchTopArtists(USERNAME, rangeParams, 5, forceRefresh),
     fetchTopGenres(USERNAME, rangeParams, 5, forceRefresh),
     fetchStreamStats(USERNAME, rangeParams, forceRefresh),
     fetchRecentStreams(USERNAME, 10, forceRefresh),
     fetchDateStats(USERNAME, rangeParams, forceRefresh)
-  ]);
+  ];
+
+  // Also fetch real historical streams for the heatmap & daily streak if not cached
+  if (!cachedStreamHistory || forceRefresh) {
+    requests.push(fetchStreamHistory(USERNAME, 10000, forceRefresh));
+  }
+
+  const results = await Promise.allSettled(requests);
+
+  const tracksResult = results[0];
+  const artistsResult = results[1];
+  const genresResult = results[2];
+  const statsResult = results[3];
+  const recentResult = results[4];
+  const datesResult = results[5];
+  const historyResult = results[6];
 
   // Extract resolved values or null
   const topTracks = tracksResult.status === 'fulfilled' ? tracksResult.value : null;
@@ -286,6 +340,47 @@ async function loadDashboard(rangeId, forceRefresh = false) {
   const recentStreams = recentResult.status === 'fulfilled' ? recentResult.value : null;
   const dateStats = datesResult.status === 'fulfilled' ? datesResult.value : null;
 
+  if (historyResult && historyResult.status === 'fulfilled' && Array.isArray(historyResult.value)) {
+    cachedStreamHistory = historyResult.value;
+  }
+
+  // Calculate real daily activity map & actual streak from historical stream logs
+  const dailyActivityMap = {};
+  const activeDateSet = new Set();
+
+  if (cachedStreamHistory && Array.isArray(cachedStreamHistory)) {
+    for (const item of cachedStreamHistory) {
+      if (!item.endTime) continue;
+      const dStr = item.endTime.slice(0, 10);
+      dailyActivityMap[dStr] = (dailyActivityMap[dStr] || 0) + 1;
+      activeDateSet.add(dStr);
+    }
+  }
+
+  // Calculate daily streak
+  let computedStreak = 0;
+  const sortedDates = [...activeDateSet].sort().reverse();
+  if (sortedDates.length > 0) {
+    const todayStr = new Date().toISOString().slice(0, 10);
+    let checkDate = new Date();
+    // If no streams yet today, begin streak check from yesterday
+    if (!activeDateSet.has(todayStr)) {
+      checkDate.setDate(checkDate.getDate() - 1);
+    }
+    while (true) {
+      const dKey = checkDate.toISOString().slice(0, 10);
+      if (activeDateSet.has(dKey)) {
+        computedStreak++;
+        checkDate.setDate(checkDate.getDate() - 1);
+      } else {
+        break;
+      }
+    }
+  }
+  if (computedStreak > 0) {
+    currentStreak = computedStreak;
+  }
+
   // Cache current dashboard data for modal, canvas export, and sharing
   currentDashboardData = {
     profile: cachedProfile,
@@ -293,8 +388,15 @@ async function loadDashboard(rangeId, forceRefresh = false) {
     topTracks,
     topArtists,
     topGenres,
-    dateStats
+    dateStats,
+    dailyActivityMap,
+    streakDays: currentStreak
   };
+
+  // Cache weekly data specifically for the Weekly Recap
+  if (rangeId === 'this-week') {
+    weeklyDashboardData = { ...currentDashboardData };
+  }
 
   // Render Header
   renderHeader(cachedProfile, stats, currentRange, (newRange) => {
@@ -309,9 +411,9 @@ async function loadDashboard(rangeId, forceRefresh = false) {
     renderCardError('card-hero-track', "Couldn't load Top Track");
   }
 
-  // Render Listening Time Card
+  // Render Listening Time Card with accurate period days and real streak
   if (statsResult.status === 'fulfilled') {
-    renderListeningTime(stats);
+    renderListeningTime(stats, currentRange, currentStreak, cachedProfile);
   } else {
     renderCardError('card-listening-time', "Couldn't load listening duration");
   }
@@ -337,8 +439,8 @@ async function loadDashboard(rangeId, forceRefresh = false) {
     renderCardError('card-top-artists', "Couldn't load top artists");
   }
 
-  // Render Listening Intensity Heatmap (guaranteed graceful fallback, never displays an error)
-  renderListeningIntensity(dateStats);
+  // Render Listening Intensity Heatmap with real daily stream activity
+  renderListeningIntensity(dailyActivityMap, dateStats);
 
   // Render Live / Recent Streams
   if (recentResult.status === 'fulfilled') {
@@ -348,10 +450,24 @@ async function loadDashboard(rangeId, forceRefresh = false) {
   }
 }
 
-// Global keyboard handler: Escape closes modal
+// Global click handler: Track row clicks open Spotify (ignoring preview audio buttons)
+document.addEventListener('click', (e) => {
+  if (e.target.closest('.row-preview-btn, .btn-audio-preview, .recent-play-btn, a, button')) return;
+  const row = e.target.closest('.track-row[data-spotify-url]');
+  if (row && row.dataset.spotifyUrl) {
+    window.open(row.dataset.spotifyUrl, '_blank', 'noopener,noreferrer');
+  }
+});
+
+// Global keyboard handler: Enter/Space on track row opens Spotify, Escape closes modal
 document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape' && isModalOpen) {
     closeWeeklyRecapModal();
+  } else if ((e.key === 'Enter' || e.key === ' ') && e.target?.classList?.contains('track-row')) {
+    if (e.target.dataset.spotifyUrl) {
+      e.preventDefault();
+      window.open(e.target.dataset.spotifyUrl, '_blank', 'noopener,noreferrer');
+    }
   }
 });
 
